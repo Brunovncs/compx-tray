@@ -1,0 +1,29 @@
+[package]
+name = "compx-proto"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "HID protocol for COMPX-based gaming mice (ATK, VXE, MAD, Dragonfly)"
+
+[features]
+default = ["hid"]
+hid = ["dep:hidapi"]
+
+[dependencies]
+hidapi = { version = "2.6", default-features = false, features = ["windows-native"], optional = true }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_System_Diagnostics_ToolHelp",
+    "Win32_System_Threading",
+    "Win32_UI_WindowsAndMessaging",
+] }
+
+[[example]]
+name = "probe"
+required-features = ["hid"]
+
+[[example]]
+name = "eeprom"
+required-features = ["hid"]
