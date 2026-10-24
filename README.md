@@ -134,9 +134,9 @@ The 14 tests cover the protocol library: packet checksums, PAW3950 Ultra DPI sta
 DPI steps (3950 Ultra, 3950, 3395SE) compared with values taken from ATK HUB, a round trip of every valid DPI value
 of all 9 sensors, the PAW3955 wide encoding, polling rate, rejection of a bad CRC, the model catalog
 (sorted, unique, finds the Y9 Ultimate), program rules (including case-insensitive non-ASCII names)
-and the IPC messages. The tray has 4 tests: the IPC handshake over a real socket (the right token
-opens the channel; a wrong token or an endless hello line is dropped) and the backup file-name
-check. The panel has no automated tests.
+and the IPC messages. The tray has 6 tests: the IPC handshake over a real socket (the right token
+opens the channel; a wrong token or an endless hello line is dropped), the backup file-name check,
+and restoring lift-off by height, since its raw values differ between sensors. The panel has no automated tests.
 
 Protocol notes are in [`docs/protocol.md`](docs/protocol.md). Two diagnostics talk to a connected
 mouse:

@@ -11,6 +11,7 @@ use compx_proto::info::Battery;
 use compx_proto::ipc::{MouseState, Status};
 use compx_proto::procs;
 use compx_proto::rules::{Rule, RuleMode};
+use compx_proto::sensor::Sensor;
 use compx_proto::settings::{MouseSettings, SettingChange};
 use compx_proto::{Error, Event, Mouse};
 
@@ -87,6 +88,14 @@ struct Worker {
     last_battery: Instant,
     /// When to read the profile again after an unconfirmed switch.
     recheck: Option<Instant>,
+}
+
+/// Lift-off is the one setting stored raw, and raw values differ between sensors (0.7 mm is 3 on a
+/// PAW3950 and 1 on a PAW3950 Ultra), so a backup is restored by height. `None` when the saved
+/// height is unknown or the current sensor has no such height.
+fn lift_off_raw(saved: &MouseSettings, raw: u8, sensor: Option<Sensor>) -> Option<u8> {
+    let height = saved.lift_off_options.iter().find(|o| o.raw == raw)?.tenths_mm;
+    sensor?.lift_off_options().iter().find(|l| l.tenths_mm == height).map(|l| l.raw)
 }
 
 /// Why `serve` stopped.
@@ -212,14 +221,19 @@ impl Worker {
             }
         }
         changes.push(SettingChange::CurrentStage { index: saved.current_stage });
-        changes.extend(saved.lift_off.map(|raw| SettingChange::LiftOff { raw }));
+        let mut failed = 0;
+        if let Some(raw) = saved.lift_off {
+            match lift_off_raw(&saved, raw, mouse.identity.as_ref().and_then(|i| i.sensor())) {
+                Some(raw) => changes.push(SettingChange::LiftOff { raw }),
+                None => failed += 1,
+            }
+        }
         changes.extend(saved.debounce_ms.map(|ms| SettingChange::Debounce { ms }));
         changes.extend(saved.motion_sync.map(|on| SettingChange::MotionSync { on }));
         changes.extend(saved.angle_snap.map(|on| SettingChange::AngleSnap { on }));
         changes.extend(saved.ripple.map(|on| SettingChange::Ripple { on }));
         changes.extend(saved.sensor_mode.map(|mode| SettingChange::SensorMode { mode }));
 
-        let mut failed = 0;
         for change in changes {
             match mouse.apply(change) {
                 Ok(()) => {}
@@ -308,5 +322,36 @@ impl Worker {
                 Err(_) => return Err(Exit::Lost),
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn saved_on(sensor: Sensor) -> MouseSettings {
+        MouseSettings {
+            lift_off_options: sensor.lift_off_options().iter().map(|&l| l.into()).collect(),
+            ..MouseSettings::default()
+        }
+    }
+
+    #[test]
+    fn lift_off_is_restored_by_height() {
+        let ultra = saved_on(Sensor::Paw3950Ultra);
+        assert_eq!(lift_off_raw(&ultra, 3, Some(Sensor::Paw3950Ultra)), Some(3));
+        // 0.7 mm and 1 mm exist on both sensors, under different raw values.
+        assert_eq!(lift_off_raw(&ultra, 1, Some(Sensor::Paw3950)), Some(3));
+        assert_eq!(lift_off_raw(&ultra, 4, Some(Sensor::Paw3950)), Some(1));
+        assert_eq!(lift_off_raw(&saved_on(Sensor::Paw3950), 3, Some(Sensor::Paw3950Ultra)), Some(1));
+    }
+
+    #[test]
+    fn lift_off_without_a_matching_height_is_not_restored() {
+        let ultra = saved_on(Sensor::Paw3950Ultra);
+        assert_eq!(lift_off_raw(&ultra, 2, Some(Sensor::Paw3950)), None);
+        assert_eq!(lift_off_raw(&ultra, 1, Some(Sensor::Paw3311)), None);
+        assert_eq!(lift_off_raw(&ultra, 1, None), None);
+        assert_eq!(lift_off_raw(&MouseSettings::default(), 1, Some(Sensor::Paw3950Ultra)), None);
     }
 }
