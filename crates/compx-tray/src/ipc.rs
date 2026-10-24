@@ -1,6 +1,6 @@
 //! Local channel with the panel (compx-tray-ui); message types live in `compx_proto::ipc`.
 
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{Ipv4Addr, TcpListener, TcpStream};
 use std::sync::mpsc::Sender;
 use std::sync::{Arc, Mutex};
@@ -13,6 +13,10 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{PostThreadMessageW, WM_APP};
 use compx_proto::ipc::{self, PanelMessage, TrayMessage};
 
 pub const WM_IPC: u32 = WM_APP + 2;
+
+/// A hello is `{"type":"hello","token":"<32 hex digits>"}`. The limit keeps an unauthenticated
+/// client from growing the line without end: the read timeout applies per read, not in total.
+const HELLO_MAX: u64 = 256;
 
 /// Panel messages as they reach the UI thread. `Connected` asks for the initial state.
 pub enum Incoming {
@@ -64,7 +68,7 @@ pub fn serve(tx: Sender<Incoming>, ui_thread: u32) -> std::io::Result<(u16, Stri
                 let _ = reader.set_read_timeout(Some(Duration::from_secs(5)));
                 let mut reader = BufReader::new(reader);
                 let mut line = String::new();
-                reader.read_line(&mut line).ok()?;
+                (&mut reader).take(HELLO_MAX).read_line(&mut line).ok()?;
                 match serde_json::from_str(&line) {
                     Ok(PanelMessage::Hello { token }) if token == expected => {}
                     _ => return None,
@@ -90,4 +94,65 @@ pub fn serve(tx: Sender<Incoming>, ui_thread: u32) -> std::io::Result<(u16, Stri
     });
 
     Ok((port, token, clients))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::io::ErrorKind;
+    use std::sync::mpsc;
+
+    use super::*;
+
+    fn connect(port: u16) -> TcpStream {
+        let stream = TcpStream::connect((Ipv4Addr::LOCALHOST, port)).unwrap();
+        stream.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+        stream
+    }
+
+    /// The tray hung up (end of stream or reset) instead of waiting for more input.
+    fn dropped(mut stream: &TcpStream) -> bool {
+        match stream.read(&mut [0u8; 64]) {
+            Ok(n) => n == 0,
+            Err(e) => !matches!(e.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut),
+        }
+    }
+
+    #[test]
+    fn hello_with_the_token_opens_the_channel() {
+        let (tx, rx) = mpsc::channel();
+        let (port, token, clients) = serve(tx, 0).unwrap();
+        let mut stream = connect(port);
+        stream.write_all(ipc::line(&PanelMessage::Hello { token }).as_bytes()).unwrap();
+        stream.write_all(ipc::line(&PanelMessage::ReadSettings).as_bytes()).unwrap();
+
+        let wait = Duration::from_secs(2);
+        assert!(matches!(rx.recv_timeout(wait), Ok(Incoming::Connected)));
+        assert!(matches!(rx.recv_timeout(wait), Ok(Incoming::Message(PanelMessage::ReadSettings))));
+
+        clients.send(&TrayMessage::Focus);
+        let mut line = String::new();
+        BufReader::new(&stream).read_line(&mut line).unwrap();
+        assert_eq!(line, ipc::line(&TrayMessage::Focus));
+    }
+
+    #[test]
+    fn wrong_token_is_dropped() {
+        let (tx, rx) = mpsc::channel();
+        let (port, _, _) = serve(tx, 0).unwrap();
+        let mut stream = connect(port);
+        stream.write_all(ipc::line(&PanelMessage::Hello { token: "0".repeat(32) }).as_bytes()).unwrap();
+        stream.write_all(ipc::line(&PanelMessage::ReadSettings).as_bytes()).unwrap();
+        assert!(dropped(&stream));
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn endless_hello_is_dropped() {
+        let (tx, _rx) = mpsc::channel();
+        let (port, _, _) = serve(tx, 0).unwrap();
+        let mut stream = connect(port);
+        // The tray may hang up mid-write; only the outcome matters.
+        let _ = stream.write_all(&[b'a'; 64 * 1024]);
+        assert!(dropped(&stream));
+    }
 }

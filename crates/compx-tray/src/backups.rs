@@ -60,3 +60,16 @@ pub fn list() -> Vec<Backup> {
     list.sort_by_key(|b| std::cmp::Reverse(b.created));
     list
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_plain_json_names_from_the_folder() {
+        assert_eq!(path("profile1-1700000000.json"), dir().map(|d| d.join("profile1-1700000000.json")));
+        for name in ["../x.json", r"..\x.json", r"C:\x.json", "C:x.json", "a/b.json", "x:y.json", ".json", "..json", "x.txt", ""] {
+            assert_eq!(path(name), None, "{name}");
+        }
+    }
+}
